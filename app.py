@@ -1,5 +1,6 @@
 import numpy as np
-from flask import Flask, url_for, redirect, render_template, request
+import pandas as pd
+from flask import Flask, url_for, redirect, render_template, request, jsonify
 import pickle
 import os
 from datetime import datetime
@@ -9,9 +10,9 @@ from sklearn.pipeline import Pipeline
 
 app = Flask(__name__)
 
-model = pickle.load(open("Churn_pred_model","rb")) 
+model = pickle.load(open("Churn_pred","rb")) 
 categorical_features = ["Geography", "Card Type"] 
-features = [ "CreditScore",
+features = ["CreditScore",
     "Geography",
     "Age",
     "Tenure",
@@ -20,7 +21,6 @@ features = [ "CreditScore",
     "HasCrCard",
     "IsActiveMember",
     "EstimatedSalary",
-    "Exited",
     "Complain",
     "Satisfaction Score",
     "Card Type",
@@ -30,6 +30,43 @@ features = [ "CreditScore",
 @app.route("/")
 def home():
     return render_template("home.html")
+
+@app.route("/api/predict",methods=['POST'])
+def predcit_api():
+    data = request.get_json()
+    df = pd.DataFrame([data])
+
+    pred = model.predict(df)
+    prob = model.predict_proba(df)
+
+    explainer = shap.TreeExplainer(model.steps[-1][1])
+    preprocessor = Pipeline(model.steps[:-1])
+    data_pro = preprocessor.transform(df)
+    shap_values = explainer.shap_values(data_pro)
+
+    feature_importance = []
+    for i , feature_name in enumerate(features):
+         feature_importance.append(
+              {
+                   "feature":feature_name,
+                   "value":data[feature_name],
+                   "shap_value":float(shap_values[0][i]),
+                   "Contribution":"Positive" if shap_values[0][i] > 0 else "Neagative"
+              }
+         ) 
+    feature_importance.sort(key=lambda x:abs(x["shap_value"]),reverse=True)
+    response = {
+        "Prediction": {
+            "result": int(pred[0]) if hasattr(pred[0], "item") else pred[0],  # int/float
+            "prob": prob[0].tolist() if hasattr(prob[0], "tolist") else prob[0]  # list
+        },
+        "Feature_analysis": {
+            "top_5": feature_importance[:5],
+            "All_features": feature_importance
+        },
+        "Time_Stamp": str(datetime.now())
+    }
+    return jsonify(response), 200
 
 @app.route("/predict",methods=['POST'])
 def predict():
@@ -54,7 +91,7 @@ def predict():
             return f"Error: Missing values for fields: {', '.join(missing_fields)}"        
 
 
-    data = np.array(input_value).reshape(1, -1)        
+    data = pd.DataFrame([input_value], columns=features)        
     predict = model.predict(data)
     prob = model.predict_proba(data)
 
@@ -71,13 +108,13 @@ def predict():
     plt.close()
 
     feature_values = np.abs(sha_values[0])
+    zipped_features = list(zip(features, feature_values))
 
     return render_template("dashboard.html",
                            prediction = predict[0],
                            probability = prob[0],
                            shap_img = "shap.png",
-                           feature_names = features,
-                           feature_values = feature_values,
+                           zipped_features = zipped_features,
                            Datetime = datetime.now() 
                            )
 
